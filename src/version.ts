@@ -19,7 +19,7 @@ export function getBuildCommit(): string {
       timeout: 2000
     }).trim();
   } catch {
-    return 'cf0e432';
+    return 'afcb30e';
   }
 }
 
