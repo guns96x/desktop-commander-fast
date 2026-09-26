@@ -1,3 +1,4 @@
+import '../bootstrap.js';
 import { MCPDevice, getRemoteDeviceConfigPath } from '../remote-device/device.js';
 import fs from 'fs/promises';
 import os from 'os';
@@ -78,16 +79,60 @@ Note:
         persist_session: persistSession,
     });
 
-    // Start caffeinate on macOS (unless disabled)
-    // Caffeinate will monitor this process and automatically exit when it terminates
-    if (!disableNoSleep && os.platform() === 'darwin') {
-        try {
-            console.debug('[DEBUG] Start caffeinate', process.pid);
-            const { default: caffeinate } = await import('caffeinate');
-            caffeinate({ pid: process.pid });
-            console.log('☕ No sleep mode enabled');
-        } catch (error) {
-            console.warn('⚠️ Failed to start caffeinate:', error);
+    // Prevent unhandled rejections or transient network glitches from crashing remote mode
+    process.on('uncaughtException', (err) => {
+        console.error('⚠️ Uncaught exception in remote process:', err instanceof Error ? err.message : err);
+        captureRemote('remote_uncaught_exception', { error: err instanceof Error ? err.message : String(err) }).catch(() => {});
+    });
+    process.on('unhandledRejection', (reason) => {
+        console.error('⚠️ Unhandled rejection in remote process:', reason instanceof Error ? reason.message : reason);
+        captureRemote('remote_unhandled_rejection', { error: reason instanceof Error ? reason.message : String(reason) }).catch(() => {});
+    });
+
+    // Start sleep prevention on Windows or macOS (unless disabled)
+    if (!disableNoSleep) {
+        if (os.platform() === 'win32') {
+            try {
+                const { spawn } = await import('child_process');
+                const keepAliveScript = `
+$c = @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32PowerKeepAlive {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint SetThreadExecutionState(uint esFlags);
+    public static uint KeepAlive() { return SetThreadExecutionState(0x80000041); }
+    public static uint ResetState() { return SetThreadExecutionState(0x80000000); }
+}
+"@
+if (-not ([System.Management.Automation.PSTypeName]'Win32PowerKeepAlive').Type) {
+    Add-Type -TypeDefinition $c -Language CSharp
+}
+[Win32PowerKeepAlive]::KeepAlive() | Out-Null
+while ($true) { Start-Sleep -Seconds 60; [Win32PowerKeepAlive]::KeepAlive() | Out-Null }
+`;
+                const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', keepAliveScript], {
+                    detached: true,
+                    stdio: 'ignore',
+                    windowsHide: true,
+                });
+                ps.unref();
+                process.on('exit', () => {
+                    try { ps.kill(); } catch {}
+                });
+                console.log('⚡ Windows no-sleep mode enabled (ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED)');
+            } catch (error) {
+                console.warn('⚠️ Failed to start Windows no-sleep:', error);
+            }
+        } else if (os.platform() === 'darwin') {
+            try {
+                console.debug('[DEBUG] Start caffeinate', process.pid);
+                const { default: caffeinate } = await import('caffeinate');
+                caffeinate({ pid: process.pid });
+                console.log('☕ No sleep mode enabled');
+            } catch (error) {
+                console.warn('⚠️ Failed to start caffeinate:', error);
+            }
         }
     }
 

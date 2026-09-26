@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import '../bootstrap.js';
 import { ChannelUnreachableError, RemoteChannel, observeServerDate, type AuthSession } from './remote-channel.js';
 import { DeviceAuthenticator } from './device-authenticator.js';
 import { DesktopCommanderIntegration } from './desktop-commander-integration.js';

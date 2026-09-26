@@ -242,23 +242,25 @@ export class DesktopCommanderIntegration {
 
     async resolveMcpConfig(): Promise<McpConfig | null> {
         console.debug('[DEBUG] Resolving MCP config...');
-        // Option 1: Development/Local Build
-        // Adjusting path resolution since we are now in src/remote-device and dist is in root/dist
-        // Original: path.resolve(__dirname, '../../dist/index.js')
-        const devPath = path.resolve(__dirname, '../../dist/index.js');
-        console.debug('[DEBUG] Checking local dev path:', devPath);
-        try {
-            await fs.access(devPath);
-            console.debug(' - 🔍 Found local MCP server at:', devPath);
-            return {
-                command: process.execPath, // Use the current node executable
-                args: [devPath],
-                cwd: path.dirname(devPath)
-            };
-        } catch {
-            console.debug('[DEBUG] Local dev path not found, trying global installation');
-            // Local file not found, continue...
+        // Option 1: Pinned / Development / Local Build
+        const candidatePaths = [
+            path.resolve(__dirname, '../index.js'),
+            path.resolve(__dirname, '../../dist/index.js'),
+            path.resolve(__dirname, '../../../dist/index.js'),
+            'C:\\Users\\pavlo\\desktop-commander-fast\\dist\\index.js'
+        ];
+        for (const devPath of candidatePaths) {
+            try {
+                await fs.access(devPath);
+                console.debug(' - 🔍 Found local MCP server at:', devPath);
+                return {
+                    command: process.execPath, // Use the current node executable
+                    args: [devPath],
+                    cwd: path.dirname(devPath)
+                };
+            } catch {}
         }
+        console.debug('[DEBUG] Local build path not found, trying global installation');
 
         // Option 2: Global Installation
         const commandName = 'desktop-commander';
