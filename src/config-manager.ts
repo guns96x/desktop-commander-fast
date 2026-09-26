@@ -6,6 +6,8 @@ import os from 'os';
 import lockfile from 'proper-lockfile';
 import { VERSION } from './version.js';
 import { CONFIG_FILE } from './config.js';
+import { getDefaultShell } from './utils/shell.js';
+import { writeFileAtomic } from './utils/atomic-write.js';
 
 export interface ServerConfig {
   blockedCommands?: string[];
@@ -173,18 +175,7 @@ class ConfigManager {
         "cipher",    // Encrypt/decrypt files or wipe data
         "takeown"    // Take ownership of files
       ],
-      defaultShell: (() => {
-        if (os.platform() === 'win32') {
-          return 'powershell.exe';
-        }
-        // Use user's actual shell from environment
-        // On macOS, default to zsh (default since Catalina) since process.env.SHELL
-        // may not be set when running inside Claude Desktop
-        const fallbackShell = os.platform() === 'darwin' ? '/bin/zsh' : '/bin/sh';
-        const userShell = process.env.SHELL || fallbackShell;
-        // Return just the shell path - we'll handle login shell flag elsewhere
-        return userShell;
-      })(),
+      defaultShell: getDefaultShell(),
       allowedDirectories: [],
       telemetryEnabled: true, // Default to opt-out approach (telemetry on by default)
       fileWriteLineLimit: 50,  // Default line limit for file write operations (changed from 100)
@@ -207,16 +198,6 @@ class ConfigManager {
       }
     }
     throw lastError;
-  }
-
-  private async writeConfigAtomically(config: ServerConfig): Promise<void> {
-    const tempPath = `${this.configPath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
-    try {
-      await fs.writeFile(tempPath, JSON.stringify(config, null, 2), 'utf8');
-      await fs.rename(tempPath, this.configPath);
-    } finally {
-      await fs.unlink(tempPath).catch(() => {});
-    }
   }
 
   private async acquireConfigLock(): Promise<() => Promise<void>> {
@@ -243,7 +224,7 @@ class ConfigManager {
         existed = false;
       }
       mutate(latest, existed);
-      await this.writeConfigAtomically(latest);
+      await writeFileAtomic(this.configPath, JSON.stringify(latest, null, 2));
       this.config = { ...latest, version: VERSION };
       return latest;
     } finally {
@@ -328,7 +309,10 @@ class ConfigManager {
     return this.config[key];
   }
 
-  /** Set a specific configuration value and wait for durable persistence. */
+  /**
+   * Set a specific configuration value and wait until it is saved: the data is
+   * flushed to disk before the rename; the folder flush after it is best effort.
+   */
   async setValue(key: string, value: any): Promise<void> {
     await this.init();
     if (key === 'telemetryEnabled') value = normalizeTelemetryEnabledValue(value);
@@ -349,7 +333,10 @@ class ConfigManager {
     await write;
   }
 
-  /** Update one value under the cross-process lock and return the durable value. */
+  /**
+   * Update one value under the cross-process lock and return it once saved: the
+   * data is flushed to disk before the rename; the folder flush after it is best effort.
+   */
   async updateValue(key: string, updater: (current: any) => any): Promise<any> {
     await this.init();
     let updatedValue: any;
