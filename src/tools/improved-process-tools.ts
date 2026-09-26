@@ -1,6 +1,6 @@
 import { terminalManager, MAX_BUFFERED_OUTPUT_CHARS, getProcessWaitLimit } from '../terminal-manager.js';
 import { commandManager } from '../command-manager.js';
-import { StartProcessArgsSchema, ReadProcessOutputArgsSchema, InteractWithProcessArgsSchema, ForceTerminateArgsSchema, ListSessionsArgsSchema } from './schemas.js';
+import { StartProcessArgsSchema, ReadProcessOutputArgsSchema, InteractWithProcessArgsSchema, ForceTerminateArgsSchema, ListSessionsArgsSchema, ExecBatchArgsSchema } from './schemas.js';
 import { capture } from "../utils/capture.js";
 import { ServerResult } from '../types.js';
 import { analyzeProcessState, cleanProcessOutput, formatProcessStateMessage, ProcessState } from '../utils/process-detection.js';
@@ -173,12 +173,14 @@ export async function startProcess(args: unknown, maxWaitMs: number = MAX_PROCES
     shellUsed = config.defaultShell || getDefaultShell();
   }
 
+  const cwd = parsed.data.cwd || parsed.data.working_directory;
   const result = await terminalManager.executeCommand(
     commandToRun,
     parsed.data.timeout_ms,
     shellUsed,
     parsed.data.verbose_timing || false,
-    maxWaitMs
+    maxWaitMs,
+    cwd
   );
 
   if (result.pid === -1) {
@@ -299,7 +301,9 @@ export async function readProcessOutput(args: unknown, maxWaitMs: number = MAX_P
 
   // Timing telemetry
   const startTime = Date.now();
-  const { waitMs } = getProcessWaitLimit(timeout_ms, maxWaitMs);
+  const { waitMs: rawWaitMs } = getProcessWaitLimit(timeout_ms, maxWaitMs);
+  // Cap polling wait to max 1000ms when waiting for new output
+  const waitMs = Math.min(rawWaitMs, 1000);
 
   // For active sessions with no new output yet, optionally wait for output
   const session = terminalManager.getSession(pid);
@@ -416,6 +420,17 @@ export async function readProcessOutput(args: unknown, maxWaitMs: number = MAX_P
       type: "text",
       text: `${statusMessage}\n\n${responseText}${processStateMessage}${timingMessage}`
     }],
+    structuredContent: {
+      pid,
+      isComplete: result.isComplete,
+      exitCode: result.exitCode ?? null,
+      signal: result.signal ?? null,
+      readFrom: result.readFrom,
+      readCount: result.readCount,
+      totalLines: result.totalLines,
+      remaining: result.remaining,
+      cursor: result.readFrom + result.readCount,
+    },
   };
 }
 
@@ -796,3 +811,86 @@ export async function listSessions(): Promise<ServerResult> {
     },
   };
 }
+
+/**
+ * Execute a batch of commands sequentially.
+ * Fast, robust execution returning results for each command.
+ */
+export async function execBatch(args: unknown, maxWaitMs: number = MAX_PROCESS_WAIT_MS): Promise<ServerResult> {
+  const parsed = ExecBatchArgsSchema.safeParse(args);
+  if (!parsed.success) {
+    return {
+      content: [{ type: "text", text: `Error: Invalid arguments for exec_batch: ${parsed.error}` }],
+      isError: true,
+    };
+  }
+
+  const { commands, timeout_ms = 10000, shell, cwd, continue_on_error = false } = parsed.data;
+  const config = await configManager.getConfig();
+  const shellUsed = shell || config.defaultShell || getDefaultShell();
+
+  const results: Array<{
+    command: string;
+    pid: number;
+    exitCode: number | null;
+    output: string;
+    isError: boolean;
+    durationMs: number;
+  }> = [];
+
+  let anyError = false;
+
+  for (const cmd of commands) {
+    const cmdStartTime = Date.now();
+    const res = await terminalManager.executeCommand(
+      cmd,
+      timeout_ms,
+      shellUsed,
+      false,
+      maxWaitMs,
+      cwd
+    );
+
+    const durationMs = Date.now() - cmdStartTime;
+    const completed = terminalManager.getCompletedSession(res.pid);
+    const exitCode: number | null = completed ? completed.exitCode : (res.processState?.isFinished ? 0 : null);
+    const isCmdError = res.pid === -1 || (exitCode !== null && exitCode !== 0);
+
+    if (isCmdError) {
+      anyError = true;
+    }
+
+    results.push({
+      command: cmd,
+      pid: res.pid,
+      exitCode,
+      output: res.output,
+      isError: isCmdError,
+      durationMs,
+    });
+
+    if (isCmdError && !continue_on_error) {
+      break;
+    }
+  }
+
+  const textSummary = results.map((r, i) => {
+    const statusMark = r.isError ? '❌' : '✅';
+    const exitStr = r.exitCode !== null ? `(exit: ${r.exitCode})` : '(running/timed out)';
+    return `[${i + 1}/${results.length}] ${statusMark} ${r.command} ${exitStr} [${r.durationMs}ms]:\n${r.output.trim()}`;
+  }).join('\n\n---\n\n');
+
+  return {
+    content: [{
+      type: "text",
+      text: textSummary,
+    }],
+    structuredContent: {
+      total: commands.length,
+      executed: results.length,
+      success: !anyError,
+      results,
+    },
+    isError: anyError && !continue_on_error,
+  };
+}

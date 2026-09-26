@@ -51,6 +51,7 @@ import {
     GetPromptsArgsSchema,
     GetRecentToolCallsArgsSchema,
     WritePdfArgsSchema,
+    ExecBatchArgsSchema,
     toolArgSchemas,
 } from './tools/schemas.js';
 import {
@@ -1044,6 +1045,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 },
             },
             {
+                name: "exec_batch",
+                description: `
+                        Execute a batch of terminal commands sequentially on the authorized device.
+                        
+                        Returns execution results, exit codes, and output for each command.
+                        Ideal for running multiple git, status, build, or setup commands in a single fast round-trip.
+                        
+                        ${CMD_PREFIX_DESCRIPTION}`,
+                inputSchema: zodToJsonSchema(ExecBatchArgsSchema),
+                annotations: {
+                    title: "Execute Batch Commands",
+                    readOnlyHint: false,
+                },
+            },
+            {
                 name: "list_processes",
                 description: `
                         List all running processes.
@@ -1432,6 +1448,10 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
                 result = await handlers.handleListSessions();
                 break;
 
+            case "exec_batch":
+                result = await handlers.handleExecBatch(args);
+                break;
+
             // Process tools
             case "list_processes":
                 result = await handlers.handleListProcesses();
@@ -1524,90 +1544,20 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
             return result;
         }
 
-        if (result.isError) {
-            await usageTracker.trackFailure(name);
-            console.log(`[FEEDBACK DEBUG] Tool ${name} failed, not checking feedback`);
-        } else {
-            await usageTracker.trackSuccess(name);
-            console.log(`[FEEDBACK DEBUG] Tool ${name} succeeded, checking feedback...`);
-
-            // Check if should show onboarding (before feedback - first-time users are priority)
-            const shouldShowOnboarding = await usageTracker.shouldShowOnboarding();
-            console.log(`[ONBOARDING DEBUG] Should show onboarding: ${shouldShowOnboarding}`);
-
-            if (shouldShowOnboarding) {
-                console.log(`[ONBOARDING DEBUG] Generating onboarding message...`);
-                const onboardingResult = await usageTracker.getOnboardingMessage();
-                console.log(`[ONBOARDING DEBUG] Generated variant: ${onboardingResult.variant}`);
-
-                // Capture onboarding prompt injection event
-                const stats = await usageTracker.getStats();
-                await capture('server_onboarding_shown', {
-                    trigger_tool: name,
-                    total_calls: stats.totalToolCalls,
-                    successful_calls: stats.successfulCalls,
-                    days_since_first_use: Math.floor((Date.now() - stats.firstUsed) / (1000 * 60 * 60 * 24)),
-                    total_sessions: stats.totalSessions,
-                    message_variant: onboardingResult.variant
-                });
-
-                // Inject onboarding message for the LLM
-                if (result.content && result.content.length > 0 && result.content[0].type === "text") {
-                    const currentContent = result.content[0].text || '';
-                    result.content[0].text = `${currentContent}${onboardingResult.message}`;
+        // Non-blocking usage tracking off the critical response path
+        void (async () => {
+            try {
+                if (result.isError) {
+                    await usageTracker.trackFailure(name);
                 } else {
-                    result.content = [
-                        ...(result.content || []),
-                        {
-                            type: "text",
-                            text: onboardingResult.message
-                        }
-                    ];
+                    await usageTracker.trackSuccess(name);
                 }
-
-                // Mark that we've shown onboarding (to prevent spam)
-                await usageTracker.markOnboardingShown(onboardingResult.variant);
+            } catch {
+                // Ignore background tracking errors
             }
+        })();
 
-            // Check if should prompt for feedback (only on successful operations)
-            const shouldPrompt = await usageTracker.shouldPromptForFeedback();
-            console.log(`[FEEDBACK DEBUG] Should prompt for feedback: ${shouldPrompt}`);
-
-            if (shouldPrompt) {
-                console.log(`[FEEDBACK DEBUG] Generating feedback message...`);
-                const feedbackResult = await usageTracker.getFeedbackPromptMessage();
-                console.log(`[FEEDBACK DEBUG] Generated variant: ${feedbackResult.variant}`);
-
-                // Capture feedback prompt injection event
-                const stats = await usageTracker.getStats();
-                await capture('feedback_prompt_injected', {
-                    trigger_tool: name,
-                    total_calls: stats.totalToolCalls,
-                    successful_calls: stats.successfulCalls,
-                    failed_calls: stats.failedCalls,
-                    days_since_first_use: Math.floor((Date.now() - stats.firstUsed) / (1000 * 60 * 60 * 24)),
-                    total_sessions: stats.totalSessions,
-                    message_variant: feedbackResult.variant
-                });
-
-                // Inject feedback instruction for the LLM
-                if (result.content && result.content.length > 0 && result.content[0].type === "text") {
-                    const currentContent = result.content[0].text || '';
-                    result.content[0].text = `${currentContent}${feedbackResult.message}`;
-                } else {
-                    result.content = [
-                        ...(result.content || []),
-                        {
-                            type: "text",
-                            text: feedbackResult.message
-                        }
-                    ];
-                }
-
-                // Mark that we've prompted (to prevent spam)
-                await usageTracker.markFeedbackPrompted();
-            }
-
+        if (!result.isError) {
             // Check if should prompt about Docker environment
             result = await processDockerPrompt(result, name);
         }

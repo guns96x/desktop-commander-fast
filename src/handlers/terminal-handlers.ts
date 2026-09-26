@@ -3,7 +3,8 @@ import {
     readProcessOutput, 
     interactWithProcess,
     forceTerminate, 
-    listSessions 
+    listSessions,
+    execBatch
 } from '../tools/improved-process-tools.js';
 
 import { 
@@ -11,7 +12,8 @@ import {
     ReadProcessOutputArgsSchema,
     InteractWithProcessArgsSchema,
     ForceTerminateArgsSchema,
-    ListSessionsArgsSchema
+    ListSessionsArgsSchema,
+    ExecBatchArgsSchema
 } from '../tools/schemas.js';
 
 import { ServerResult } from '../types.js';
@@ -53,3 +55,11 @@ export async function handleForceTerminate(args: unknown): Promise<ServerResult>
 export async function handleListSessions(): Promise<ServerResult> {
     return listSessions();
 }
+
+/**
+ * Handle exec_batch command
+ */
+export async function handleExecBatch(args: unknown): Promise<ServerResult> {
+    const parsed = ExecBatchArgsSchema.parse(args);
+    return execBatch(parsed);
+}

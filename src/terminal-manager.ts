@@ -167,7 +167,14 @@ export class TerminalManager {
     }
   }
   
-  async executeCommand(command: string, timeoutMs: number = DEFAULT_COMMAND_TIMEOUT, shell?: string, collectTiming: boolean = false, maxWaitMs: number = MAX_PROCESS_WAIT_MS): Promise<ProcessStartResult> {
+  async executeCommand(
+    command: string,
+    timeoutMs: number = DEFAULT_COMMAND_TIMEOUT,
+    shell?: string,
+    collectTiming: boolean = false,
+    maxWaitMs: number = MAX_PROCESS_WAIT_MS,
+    cwd?: string
+  ): Promise<ProcessStartResult> {
     let config: ServerConfig = {};
     try {
       config = await configManager.getConfig();
@@ -193,10 +200,18 @@ export class TerminalManager {
     const spawnOptions: any = {
       env: {
         ...process.env,
-        TERM: 'xterm-256color'  // Better terminal compatibility
+        TERM: 'xterm-256color',  // Better terminal compatibility
+        ...(process.platform === 'win32' ? {
+          PYTHONIOENCODING: 'utf-8',
+          NODE_DEFAULT_ENCODING: 'utf-8'
+        } : {})
       },
       windowsHide: true  // Prevent visible console windows on Windows
     };
+
+    if (cwd) {
+      spawnOptions.cwd = cwd;
+    }
 
     // Add shell option if needed (for unknown shells)
     if (spawnConfig.useShellOption) {
@@ -871,19 +886,30 @@ export class TerminalManager {
     }
 
     try {
+      if (process.platform === 'win32') {
+        try {
+          session.process.kill('SIGINT');
+        } catch {}
+        setTimeout(() => {
+          try {
+            spawn('taskkill', ['/PID', pid.toString(), '/T', '/F'], { windowsHide: true });
+          } catch {}
+        }, 300);
+      } else {
         session.process.kill('SIGINT');
         setTimeout(() => {
           if (this.sessions.has(pid)) {
             session.process.kill('SIGKILL');
           }
         }, 1000);
-        return true;
-      } catch (error) {
-        // Convert error to string, handling both Error objects and other types
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        capture('server_request_error', {error: errorMessage, message: `Failed to terminate process ${pid}:`});
-        return false;
       }
+      return true;
+    } catch (error) {
+      // Convert error to string, handling both Error objects and other types
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      capture('server_request_error', {error: errorMessage, message: `Failed to terminate process ${pid}:`});
+      return false;
+    }
   }
 
   listActiveSessions(): ActiveSession[] {
@@ -898,6 +924,10 @@ export class TerminalManager {
 
   listCompletedSessions(): CompletedSession[] {
     return Array.from(this.completedSessions.values());
+  }
+
+  getCompletedSession(pid: number): any {
+    return this.completedSessions.get(pid);
   }
 }
 

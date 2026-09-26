@@ -26,12 +26,22 @@ export const ListProcessesArgsSchema = z.object({});
 // Terminal tools schemas
 export const StartProcessArgsSchema = z.object({
   command: z.string(),
-  timeout_ms: z.number(),
+  timeout_ms: z.number().default(30000),
   shell: z.string().optional(),
   verbose_timing: z.boolean().optional(),
   // 'ui' marks widget-fired calls (e.g. open-in-folder/editor buttons);
   // excluded from tool-call telemetry (see isUiOriginCall in server.ts).
   origin: z.enum(['ui', 'llm']).optional(),
+  cwd: z.string().optional(),
+  working_directory: z.string().optional(),
+});
+
+export const ExecBatchArgsSchema = z.object({
+  commands: z.array(z.string()),
+  timeout_ms: z.number().optional(),
+  shell: z.string().optional(),
+  cwd: z.string().optional(),
+  continue_on_error: z.boolean().optional(),
 });
 
 export const ReadProcessOutputArgsSchema = z.object({
@@ -274,4 +284,5 @@ export const toolArgSchemas: Record<string, z.ZodTypeAny> = {
   give_feedback_to_desktop_commander: GiveFeedbackArgsSchema,
   get_prompts: GetPromptsArgsSchema,
   track_ui_event: TrackUiEventArgsSchema,
+  exec_batch: ExecBatchArgsSchema,
 };

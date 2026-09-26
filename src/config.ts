@@ -14,10 +14,11 @@ export const DEFAULT_COMMAND_TIMEOUT = 1000; // milliseconds
 
 // Longest one process call (start_process, interact_with_process,
 // read_process_output) blocks, whatever timeout_ms asks for; the process keeps
-// running and the caller reads the rest with read_process_output. It stays well
-// under 60 s: that is the MCP SDK's default request timeout
-// (DEFAULT_REQUEST_TIMEOUT_MSEC), which Claude Desktop and the remote device's
-// own client use, and an answer capped at 60 s arrived just after the client had
-// given up (-32001 "Request timed out", #447). The margin leaves time to build
-// and deliver the answer.
-export const MAX_PROCESS_WAIT_MS = 50000;
+// running and the caller reads the rest with read_process_output.
+// In remote workflow (ChatGPT -> ASUS), we cap process waits aggressively (2000 ms)
+// so that long-running jobs (Gemini, Gradle, Claude, scripts) return PID immediately
+// rather than hanging the remote RPC.
+export const REMOTE_PROCESS_WAIT_MS = 2000;
+export const MAX_PROCESS_WAIT_MS = process.env.DESKTOP_COMMANDER_WAIT_CAP_MS
+  ? parseInt(process.env.DESKTOP_COMMANDER_WAIT_CAP_MS, 10)
+  : REMOTE_PROCESS_WAIT_MS;

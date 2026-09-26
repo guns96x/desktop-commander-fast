@@ -162,18 +162,20 @@ export function getShellSpawnArgs(shellPath: string, command: string): ShellSpaw
 
   // PowerShell Core (cross-platform, supports -Login)
   if (shellName === 'pwsh' || shellName === 'pwsh.exe') {
+    const utf8Command = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; ${command}`;
     return {
       executable,
-      args: ['-Login', '-Command', command],
+      args: ['-NoProfile', '-Login', '-Command', utf8Command],
       useShellOption: false
     };
   }
 
   // Windows PowerShell 5.1 (no login flag support)
   if (shellName === 'powershell' || shellName === 'powershell.exe') {
+    const utf8Command = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; ${command}`;
     return {
       executable,
-      args: ['-Command', command],
+      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', utf8Command],
       useShellOption: false
     };
   }
