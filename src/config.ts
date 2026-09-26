@@ -18,7 +18,8 @@ export const DEFAULT_COMMAND_TIMEOUT = 1000; // milliseconds
 // In remote workflow (ChatGPT -> ASUS), we cap process waits aggressively (2000 ms)
 // so that long-running jobs (Gemini, Gradle, Claude, scripts) return PID immediately
 // rather than hanging the remote RPC.
+export const DEFAULT_MAX_PROCESS_WAIT_MS = 50000;
 export const REMOTE_PROCESS_WAIT_MS = 2000;
 export const MAX_PROCESS_WAIT_MS = process.env.DESKTOP_COMMANDER_WAIT_CAP_MS
   ? parseInt(process.env.DESKTOP_COMMANDER_WAIT_CAP_MS, 10)
-  : REMOTE_PROCESS_WAIT_MS;
+  : DEFAULT_MAX_PROCESS_WAIT_MS;

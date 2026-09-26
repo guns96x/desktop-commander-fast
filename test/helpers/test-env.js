@@ -30,7 +30,17 @@ export function createTestEnv() {
     env,
     home,
     // Retries: on Windows a just-exited child can still hold a file in the home for a moment
-    cleanup: () => fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }),
+    cleanup: () => {
+      try {
+        fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      } catch {
+        setTimeout(() => {
+          try {
+            fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+          } catch {}
+        }, 200);
+      }
+    },
   };
 }
 

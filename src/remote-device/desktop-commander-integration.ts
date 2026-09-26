@@ -48,6 +48,11 @@ export class DesktopCommanderIntegration {
         return this.isReady && this.mcpClient !== null;
     }
 
+    /** Returns the OS PID of the local stdio MCP child process, if running. */
+    get childPid(): number | null {
+        return (this.mcpTransport as any)?._process?.pid ?? null;
+    }
+
     /**
      * Register a callback fired when the local MCP child dies unexpectedly.
      * The device uses this to stop advertising itself as online — the remote

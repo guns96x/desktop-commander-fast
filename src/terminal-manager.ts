@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { TerminalSession, CommandExecutionResult, ActiveSession, TimingInfo, OutputEvent } from './types.js';
 import { DEFAULT_COMMAND_TIMEOUT, MAX_PROCESS_WAIT_MS } from './config.js';
 import { configManager, type ServerConfig } from './config-manager.js';
@@ -888,13 +888,13 @@ export class TerminalManager {
     try {
       if (process.platform === 'win32') {
         try {
-          session.process.kill('SIGINT');
+          // Immediately kill the entire process tree using taskkill /T /F while parent
+          // is still alive, so Windows can traverse and terminate all descendants.
+          execSync(`taskkill /PID ${pid} /T /F`, { windowsHide: true, stdio: 'ignore' });
         } catch {}
-        setTimeout(() => {
-          try {
-            spawn('taskkill', ['/PID', pid.toString(), '/T', '/F'], { windowsHide: true });
-          } catch {}
-        }, 300);
+        try {
+          session.process.kill('SIGKILL');
+        } catch {}
       } else {
         session.process.kill('SIGINT');
         setTimeout(() => {

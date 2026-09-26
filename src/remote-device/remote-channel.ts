@@ -1,6 +1,6 @@
 import { createClient, SupabaseClient, Session, UserResponse, User, RealtimeChannel } from '@supabase/supabase-js';
 import { captureRemote } from '../utils/capture.js';
-import { VERSION } from '../version.js';
+import { VERSION, FORK_REVISION, FAST_PROFILE_VERSION, BUILD_COMMIT } from '../version.js';
 
 const NUL_CHAR = String.fromCharCode(0);
 const NUL_RE = new RegExp(NUL_CHAR, 'g');
@@ -598,7 +598,10 @@ export class RemoteChannel {
                     device_id: this.deviceId,
                     device_name: this.deviceName,
                     app_version: VERSION,
-                    platform: process.platform
+                    platform: process.platform,
+                    fork_revision: FORK_REVISION,
+                    fast_profile_version: FAST_PROFILE_VERSION,
+                    build_commit: BUILD_COMMIT
                 });
             } catch (trackErr: any) {
                 status = `threw: ${trackErr?.message}`;
@@ -701,6 +704,9 @@ export class RemoteChannel {
     private capabilitiesPayload(broadcastCapable: boolean): Record<string, any> {
         return {
             app_version: VERSION,
+            fork_revision: FORK_REVISION,
+            fast_profile_version: FAST_PROFILE_VERSION,
+            build_commit: BUILD_COMMIT,
             ...(broadcastCapable ? { transport_broadcast_v1: true } : {})
         };
     }

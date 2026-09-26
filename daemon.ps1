@@ -33,8 +33,10 @@ if (-not (Test-Path $nodeExe)) {
 # Pinned local build path
 $entryJs = "C:\Users\pavlo\desktop-commander-fast\dist\index.js"
 if (-not (Test-Path $entryJs)) {
-    # Fallback to npx cache only if local build is missing
-    $entryJs = "C:\Users\pavlo\AppData\Local\npm-cache\_npx\4b4c857f6efdfb61\node_modules\@wonderwhy-er\desktop-commander\dist\index.js"
+    $err = "[$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))] FATAL: Pinned build not found at $entryJs. Refusing to run unpinned/stale fallback. Run 'npm run build' first."
+    Write-Error $err
+    $err | Out-File -Append -FilePath "$PSScriptRoot\daemon.log" -Encoding utf8
+    exit 1
 }
 
 $logFile = "$PSScriptRoot\daemon.log"
@@ -71,6 +73,7 @@ $env:UV_THREADPOOL_SIZE = "16"
 $env:PYTHONIOENCODING = "utf-8"
 $env:NODE_DEFAULT_ENCODING = "utf-8"
 $env:DESKTOP_COMMANDER_WAIT_CAP_MS = "2000"
+$env:DESKTOP_COMMANDER_NO_SLEEP_MANAGED = "1"
 
 try {
     while ($true) {

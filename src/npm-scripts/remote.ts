@@ -58,6 +58,10 @@ Note:
     }
     printRemoteHeader();
 
+    if (!process.env.DESKTOP_COMMANDER_WAIT_CAP_MS) {
+        process.env.DESKTOP_COMMANDER_WAIT_CAP_MS = '2000';
+    }
+
     // --persist-session is kept as an accepted no-op so existing invocations
     // and docs keep working; --no-persist-session opts back out.
     const persistSession = !process.argv.includes('--no-persist-session');
@@ -92,9 +96,13 @@ Note:
     // Start sleep prevention on Windows or macOS (unless disabled)
     if (!disableNoSleep) {
         if (os.platform() === 'win32') {
-            try {
-                const { spawn } = await import('child_process');
-                const keepAliveScript = `
+            if (process.env.DESKTOP_COMMANDER_NO_SLEEP_MANAGED === '1') {
+                console.log('⚡ Windows no-sleep mode active (managed by parent daemon supervisor)');
+            } else {
+                try {
+                    const { spawn } = await import('child_process');
+                    const parentPid = process.pid;
+                    const keepAliveScript = `
 $c = @"
 using System;
 using System.Runtime.InteropServices;
@@ -109,20 +117,31 @@ if (-not ([System.Management.Automation.PSTypeName]'Win32PowerKeepAlive').Type) 
     Add-Type -TypeDefinition $c -Language CSharp
 }
 [Win32PowerKeepAlive]::KeepAlive() | Out-Null
-while ($true) { Start-Sleep -Seconds 60; [Win32PowerKeepAlive]::KeepAlive() | Out-Null }
+$parentPid = ${parentPid}
+while ($true) {
+    Start-Sleep -Seconds 60
+    if ($parentPid -and -not (Get-Process -Id $parentPid -ErrorAction SilentlyContinue)) {
+        [Win32PowerKeepAlive]::ResetState() | Out-Null
+        exit 0
+    }
+    [Win32PowerKeepAlive]::KeepAlive() | Out-Null
+}
 `;
-                const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', keepAliveScript], {
-                    detached: true,
-                    stdio: 'ignore',
-                    windowsHide: true,
-                });
-                ps.unref();
-                process.on('exit', () => {
-                    try { ps.kill(); } catch {}
-                });
-                console.log('⚡ Windows no-sleep mode enabled (ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED)');
-            } catch (error) {
-                console.warn('⚠️ Failed to start Windows no-sleep:', error);
+                    const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', keepAliveScript], {
+                        detached: false,
+                        stdio: 'ignore',
+                        windowsHide: true,
+                    });
+                    const cleanup = () => {
+                        try { ps.kill(); } catch {}
+                    };
+                    process.once('exit', cleanup);
+                    process.once('SIGINT', cleanup);
+                    process.once('SIGTERM', cleanup);
+                    console.log('⚡ Windows no-sleep mode enabled (ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED)');
+                } catch (error) {
+                    console.warn('⚠️ Failed to start Windows no-sleep:', error);
+                }
             }
         } else if (os.platform() === 'darwin') {
             try {

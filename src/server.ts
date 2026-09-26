@@ -1544,20 +1544,73 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
             return result;
         }
 
-        // Non-blocking usage tracking off the critical response path
-        void (async () => {
-            try {
-                if (result.isError) {
-                    await usageTracker.trackFailure(name);
-                } else {
-                    await usageTracker.trackSuccess(name);
-                }
-            } catch {
-                // Ignore background tracking errors
-            }
-        })();
+        // Track success or failure based on result
+        if (result.isError) {
+            void usageTracker.trackFailure(name).catch(() => {});
+        } else {
+            void usageTracker.trackSuccess(name).catch(() => {});
 
-        if (!result.isError) {
+            // Check if should show onboarding (before feedback - first-time users are priority)
+            const shouldShowOnboarding = await usageTracker.shouldShowOnboarding();
+            if (shouldShowOnboarding) {
+                const onboardingResult = await usageTracker.getOnboardingMessage();
+                const stats = await usageTracker.getStats();
+                void capture('server_onboarding_shown', {
+                    trigger_tool: name,
+                    total_calls: stats.totalToolCalls,
+                    successful_calls: stats.successfulCalls,
+                    days_since_first_use: Math.floor((Date.now() - stats.firstUsed) / (1000 * 60 * 60 * 24)),
+                    total_sessions: stats.totalSessions,
+                    message_variant: onboardingResult.variant
+                }).catch(() => {});
+
+                if (result.content && result.content.length > 0 && result.content[0].type === "text") {
+                    const currentContent = result.content[0].text || '';
+                    result.content[0].text = `${currentContent}${onboardingResult.message}`;
+                } else {
+                    result.content = [
+                        ...(result.content || []),
+                        {
+                            type: "text",
+                            text: onboardingResult.message
+                        }
+                    ];
+                }
+
+                await usageTracker.markOnboardingShown(onboardingResult.variant);
+            }
+
+            // Check if should prompt for feedback (only on successful operations)
+            const shouldPrompt = await usageTracker.shouldPromptForFeedback();
+            if (shouldPrompt) {
+                const feedbackResult = await usageTracker.getFeedbackPromptMessage();
+                const stats = await usageTracker.getStats();
+                void capture('feedback_prompt_injected', {
+                    trigger_tool: name,
+                    total_calls: stats.totalToolCalls,
+                    successful_calls: stats.successfulCalls,
+                    failed_calls: stats.failedCalls,
+                    days_since_first_use: Math.floor((Date.now() - stats.firstUsed) / (1000 * 60 * 60 * 24)),
+                    total_sessions: stats.totalSessions,
+                    message_variant: feedbackResult.variant
+                }).catch(() => {});
+
+                if (result.content && result.content.length > 0 && result.content[0].type === "text") {
+                    const currentContent = result.content[0].text || '';
+                    result.content[0].text = `${currentContent}${feedbackResult.message}`;
+                } else {
+                    result.content = [
+                        ...(result.content || []),
+                        {
+                            type: "text",
+                            text: feedbackResult.message
+                        }
+                    ];
+                }
+
+                await usageTracker.markFeedbackPrompted();
+            }
+
             // Check if should prompt about Docker environment
             result = await processDockerPrompt(result, name);
         }

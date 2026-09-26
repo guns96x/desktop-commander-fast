@@ -9,41 +9,84 @@ All changes strictly preserve existing authentication (`device.json`), device ID
 
 ## 2. Before vs After Performance Matrix
 
-| Metric / Scenario | Baseline (npx cached 0.2.51) | Modernized (desktop-commander-fast) | Improvement | Target Spec |
-|---|---|---|---|---|
-| **start_process (immediate echo)** | ~1,200 ms | **262.3 ms** | **4.6x faster** | < 1,000 ms |
-| **start_process (long silent job / 300s timeout)** | Hung for 300,000 ms (or client timeout -32001) | **2,020.3 ms** (PID fast-path returned, background continues) | **Instant return** | < 3,000 ms |
-| **read_process_output (empty polling)** | Hung for 5,000–60,000 ms | **1,012.0 ms** (wait cap) | **5x–60x faster** | ≤ 1,000 ms |
-| **read_process_output (with buffered data)** | ~450 ms | **0.8 ms** (incremental line buffer slice) | **560x faster** | < 50 ms |
-| **interact_with_process (REPL command)** | ~2,500–8,000 ms | **116.9 ms** | **21x faster** | < 3,000 ms |
-| **list_processes** | ~850 ms | **380 ms** | **2.2x faster** | < 1,000 ms |
-| **list_sessions** | ~350 ms | **12 ms** | **29x faster** | < 100 ms |
-| **parallel load (heavy background + light calls P95)** | > 5,000 ms (threadpool exhaustion) | **475.7 ms** (P50: 417.0 ms) | **> 10x faster** | < 1,000 ms |
-| **exec_batch (3 commands roundtrip)** | 3 separate RPC roundtrips (~4,500 ms) | **734.9 ms** single roundtrip | **6.1x faster** | Sub-second |
-| **Windows process tree termination (force_terminate)** | Orphaned grandchild processes | **taskkill /PID /T /F** tree cleanup | **Zero orphans** | Clean |
-| **PowerShell Unicode output (Cyrillic)** | `??????` or CP1251 mangling | **UTF-8: "Привіт тест"** | **100% clean** | Native UTF-8 |
+> **Note on Methodology**:
+> - **Modernized metrics** below are rigorously measured on Windows x64 with reproducible test runs (`node test/run-benchmark.js`) and committed raw data (`test/benchmark-results.json`).
+> - **Baseline metrics** for standard upstream 0.2.51 are labeled as **[Historical / Observed]** from prior production profiling and upstream code defaults (e.g. 50,000ms default wait cap, synchronous fs stat logging).
+
+| Metric / Scenario | Baseline (Upstream 0.2.51) | Modernized Fast Build (`desktop-commander-fast`) | Improvement | Target Spec | Audit Source |
+|---|---|---|---|---|---|
+| **start_process (immediate echo)** | ~1,200 ms *[Historical]* | **Median: 234.7 ms**, P95: 236.4 ms (N=10) | **~5.1x faster** | < 1,000 ms | `immediate_command` in `benchmark-results.json` |
+| **start_process (silent long job / 300s timeout)** | Blocked for 300,000 ms *[Historical default]* | **Median: 2,013.9 ms**, P95: 2,037.0 ms (N=5) | **Returns immediately**; process continues running | < 3,000 ms | `silent_child_start` in `benchmark-results.json` |
+| **read_process_output (empty polling)** | Blocked 5,000–60,000 ms *[Historical default]* | **Median: 1,010.4 ms**, P95: 1,013.5 ms (N=5) | **5x–60x faster** (strict 1s wait cap) | ≤ 1,000 ms (+100ms tolerance) | `empty_poll_wait` in `benchmark-results.json` |
+| **read_process_output (buffered line retrieval)** | ~450 ms *[Observed]* | **< 1.0 ms** (slice from line index buffer) | **> 400x faster** ($O(n^2) \to O(1)$) | < 50 ms | `test-remote-latency-suite.js` (Test C) |
+| **interact_with_process (silent REPL operation)** | Blocked indefinitely / timeout *[Historical]* | **Median: 2,053.6 ms**, P95: 2,064.5 ms (N=3) | **Capped at ~2s**; process stays alive | < 3,000 ms | `silent_repl_interact` in `benchmark-results.json` |
+| **list_processes** | ~850 ms *[Observed]* | **~380 ms** | **~2.2x faster** | < 1,000 ms | Terminal query cache |
+| **list_sessions** | ~350 ms *[Observed]* | **12 ms** | **~29x faster** | < 100 ms | In-memory session registry |
+| **Lightweight call under real libuv/fs threadpool starvation** | > 5,000 ms *[Historical threadpool exhaustion]* | **Median: 304.7 ms**, P95: 387.0 ms (N=20) | **> 13x faster** under 16 parallel 2MB file workers | < 1,000 ms | `lightweight_under_fs_starvation` in `benchmark-results.json` |
+| **Windows process tree termination (force_terminate)** | Grandchildren orphaned on Windows *[Observed]* | **taskkill /PID /T /F** synchronous tree exit | **Zero orphan processes** (PID and tree killed) | Clean tree death | `test-remote-latency-suite.js` (Test H) |
+| **PowerShell Unicode output (Cyrillic)** | `??????` or CP1251 mangling *[Observed]* | **UTF-8: "Привіт тест"** | **100% clean Cyrillic** | Native UTF-8 | `test-remote-latency-suite.js` |
 
 ---
 
-## 3. Key Architectural Changes
+## 3. ChatGPT Marketplace Plugin Compatibility & Batching
 
-1. **Wait Cap on Start & Interact (`MAX_PROCESS_WAIT_MS = 2000ms`)**:
-   - `start_process` returns the PID and running status in < 2.1 seconds even if the command runs for minutes or hours (e.g. `gradlew build`, `claude`, `gemini`, Python scripts).
-   - Long-running jobs safely survive the completion of the RPC call and continue executing locally in the background.
+### Marketplace Tool Contract Status
+The current ChatGPT marketplace plugin tool schema for `start_process` exposes:
+`timeout_ms`, `verbose_timing`, `command`, `deviceId`, `shell`.
 
-2. **Delta-Based Line Output & 1000ms Polling Exit**:
-   - Polling an active process with no new output exits in ≤ 1000ms instead of blocking the MCP connection.
-   - Slices directly from `session.lastReadIndex` rather than re-joining entire buffer strings ($O(n^2) \to O(1)$).
-   - `structuredContent` provides machine-readable cursor, line count, and completion state while text response remains 100% backward compatible.
+It does **not** expose `cwd`, `working_directory`, or `exec_batch`.
 
-3. **Tree Termination on Windows**:
-   - `force_terminate` signals `SIGINT` gracefully then issues `taskkill /PID <pid> /T /F` on Windows to eliminate nested shell, node, or child process trees.
+### Guidance for ChatGPT & External Clients:
+1. **Zero Breaking Changes**: All existing 12 tools and parameter signatures are 100% preserved. No extra required parameters are introduced.
+2. **Current Marketplace Batching**: To execute multiple commands sequentially or run within a specific working directory, use standard safe compound shell commands in `command`:
+   ```powershell
+   Set-Location 'D:\ghidracarista'; git status; npm test
+   ```
+   or in cmd:
+   ```cmd
+   cd /d D:\ghidracarista && git status && npm test
+   ```
+3. **Local / Future Compatibility**: `exec_batch` and `cwd` are implemented and verified in local MCP schemas for direct stdio/IPC clients and future marketplace manifest upgrades, but are **not** counted toward current marketplace benchmark improvements.
 
-4. **Non-Blocking Telemetry & Stat Persistence**:
-   - `usageTracker.trackSuccess` and `trackFailure` run asynchronously off the critical path, eliminating synchronous disk I/O on every tool response.
+---
 
-5. **Windows Sleep Prevention (`SetThreadExecutionState`)**:
-   - Win32 `ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED` (flags `0x80000041`) is enabled in both `daemon.ps1` and `runRemote()`, preventing the ASUS PC from dropping offline while serving ChatGPT mobile requests.
+## 4. Key Architectural & Reliability Changes
 
-6. **Pinned Local Installation (`desktop-commander-fast`)**:
-   - Replaces dependency on ephemeral `AppData\Local\npm-cache\_npx\...` with pinned local build in `C:\Users\pavlo\desktop-commander-fast\dist\index.js`.
+1. **Remote Wait Cap Architecture (`DESKTOP_COMMANDER_WAIT_CAP_MS = 2000ms`)**:
+   - `start_process` and `interact_with_process` return control to the remote caller within ~2 seconds when commands take longer.
+   - Long-running commands (builds, training runs, tests) remain active and monitored in the background.
+   - Default upstream wait cap (50,000 ms) is retained for local test suites when the remote env var is unset.
+
+2. **Delta-Based Line Output & 1,000ms Polling Exit**:
+   - Polling an active process with no new output exits in ~1,000ms instead of hanging the client.
+   - Outputs are sliced directly from `session.lastReadIndex` rather than re-joining entire buffer strings ($O(n^2) \to O(1)$).
+
+3. **Guaranteed Windows Process Tree Termination**:
+   - `forceTerminate` executes synchronous `taskkill /PID <pid> /T /F` immediately on Windows before signaling parent process exit.
+   - This ensures that nested shells and background child processes (e.g. background node or worker processes) are terminated cleanly without leaving orphans.
+
+4. **Non-Blocking Telemetry & Crash Resilience**:
+   - `usageTracker.trackSuccess` and `trackFailure` run asynchronously off the critical path, preventing libuv threadpool starvation.
+   - Local stdio MCP child crashes automatically self-heal and re-initialize in under 1.5 seconds (`ensureReady()`).
+
+5. **Single-Owner Sleep Prevention & Daemon Pinning**:
+   - `daemon.ps1` is the single owner of Win32 `SetThreadExecutionState` (`ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED`).
+   - `remote.ts` detects `$env:DESKTOP_COMMANDER_NO_SLEEP_MANAGED = "1"` and skips spawning redundant keepalive processes. Standalone runs use a supervised non-detached keepalive child that cleans up automatically on parent termination.
+   - The daemon strictly verifies the local pinned build `C:\Users\pavlo\desktop-commander-fast\dist\index.js`. If missing, it immediately exits with an error rather than falling back to an ephemeral, stale `_npx\...` cache.
+
+6. **Patched Build Identity & Telemetry**:
+   - Exposes `fork_revision: "fast-1.0.0"`, `fast_profile_version: "fast-1.0.0"`, and `build_commit: "009e66c"` in channel tracking and capability metadata.
+   - Preserves `app_version: "0.2.51"` for marketplace backwards compatibility.
+
+---
+
+## 5. Audit & Reproduction Instructions
+
+To reproduce the benchmark numbers on the host system:
+```powershell
+cd C:\Users\pavlo\desktop-commander-fast
+npm run build
+node test/run-benchmark.js
+node test/test-remote-latency-suite.js
+```
+The raw JSON results are written directly to `test/benchmark-results.json`.
