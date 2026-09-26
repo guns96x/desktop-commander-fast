@@ -10,19 +10,19 @@ All changes strictly preserve existing authentication (`device.json`), device ID
 ## 2. Before vs After Performance Matrix
 
 > **Note on Methodology**:
-> - **Modernized metrics** below are rigorously measured on Windows x64 with reproducible test runs (`node test/run-benchmark.js`) and committed raw data (`test/benchmark-results.json`).
+> - **Modernized metrics** below are rigorously measured on Windows x64 with reproducible test runs (`node test/run-benchmark.js`) and committed raw data (`test/benchmark-results.json`). Every named series in the matrix is directly produced by the benchmark harness.
 > - **Baseline metrics** for standard upstream 0.2.51 are labeled as **[Historical / Observed]** from prior production profiling and upstream code defaults (e.g. 50,000ms default wait cap, synchronous fs stat logging).
 
 | Metric / Scenario | Baseline (Upstream 0.2.51) | Modernized Fast Build (`desktop-commander-fast`) | Improvement | Target Spec | Audit Source |
 |---|---|---|---|---|---|
-| **start_process (immediate echo)** | ~1,200 ms *[Historical]* | **Median: 234.7 ms**, P95: 236.4 ms (N=10) | **~5.1x faster** | < 1,000 ms | `immediate_command` in `benchmark-results.json` |
-| **start_process (silent long job / 300s timeout)** | Blocked for 300,000 ms *[Historical default]* | **Median: 2,013.9 ms**, P95: 2,037.0 ms (N=5) | **Returns immediately**; process continues running | < 3,000 ms | `silent_child_start` in `benchmark-results.json` |
-| **read_process_output (empty polling)** | Blocked 5,000–60,000 ms *[Historical default]* | **Median: 1,010.4 ms**, P95: 1,013.5 ms (N=5) | **5x–60x faster** (strict 1s wait cap) | ≤ 1,000 ms (+100ms tolerance) | `empty_poll_wait` in `benchmark-results.json` |
-| **read_process_output (buffered line retrieval)** | ~450 ms *[Observed]* | **< 1.0 ms** (slice from line index buffer) | **> 400x faster** ($O(n^2) \to O(1)$) | < 50 ms | `test-remote-latency-suite.js` (Test C) |
-| **interact_with_process (silent REPL operation)** | Blocked indefinitely / timeout *[Historical]* | **Median: 2,053.6 ms**, P95: 2,064.5 ms (N=3) | **Capped at ~2s**; process stays alive | < 3,000 ms | `silent_repl_interact` in `benchmark-results.json` |
-| **list_processes** | ~850 ms *[Observed]* | **~380 ms** | **~2.2x faster** | < 1,000 ms | Terminal query cache |
-| **list_sessions** | ~350 ms *[Observed]* | **12 ms** | **~29x faster** | < 100 ms | In-memory session registry |
-| **Lightweight call under real libuv/fs threadpool starvation** | > 5,000 ms *[Historical threadpool exhaustion]* | **Median: 304.7 ms**, P95: 387.0 ms (N=20) | **> 13x faster** under 16 parallel 2MB file workers | < 1,000 ms | `lightweight_under_fs_starvation` in `benchmark-results.json` |
+| **start_process (immediate echo)** | ~1,200 ms *[Historical]* | **Median: 232.9 ms**, P95: 275.6 ms (N=10) | **~5.1x faster** | < 1,000 ms | `immediate_command` in `benchmark-results.json` |
+| **start_process (silent long job / 300s timeout)** | Blocked for 300,000 ms *[Historical default]* | **Median: 2,012.5 ms**, P95: 2,041.5 ms (N=5) | **Returns immediately**; process continues running | < 3,000 ms | `silent_child_start` in `benchmark-results.json` |
+| **read_process_output (empty polling)** | Blocked 5,000–60,000 ms *[Historical default]* | **Median: 1,006.3 ms**, P95: 1,010.2 ms (N=5) | **5x–60x faster** (strict 1s wait cap) | ≤ 1,000 ms (+100ms tolerance) | `empty_poll_wait` in `benchmark-results.json` |
+| **read_process_output (buffered line retrieval)** | ~450 ms *[Observed]* | **Median: 0.2 ms**, P95: 0.3 ms (N=10) | **> 1,000x faster** ($O(n^2) \to O(1)$) | < 50 ms | `buffered_read_output` in `benchmark-results.json` |
+| **interact_with_process (silent REPL operation)** | Blocked indefinitely / timeout *[Historical]* | **Median: 2,033.1 ms**, P95: 2,041.3 ms (N=3) | **Capped at ~2s**; process stays alive | < 3,000 ms | `silent_repl_interact` in `benchmark-results.json` |
+| **list_processes** | ~850 ms *[Observed]* | **Median: 356.5 ms**, P95: 408.8 ms (N=10) | **~2.4x faster** | < 1,000 ms | `standalone_list_processes` in `benchmark-results.json` |
+| **list_sessions** | ~350 ms *[Observed]* | **Median: 0.1 ms**, P95: 0.2 ms (N=10) | **> 1,000x faster** | < 100 ms | `standalone_list_sessions` in `benchmark-results.json` |
+| **Lightweight call under real libuv/fs threadpool starvation** | > 5,000 ms *[Historical threadpool exhaustion]* | **Median: 435.4 ms**, P95: 474.2 ms (N=20) | **> 10x faster** under 16 parallel 2MB file workers | < 1,000 ms | `lightweight_under_fs_starvation` in `benchmark-results.json` |
 | **Windows process tree termination (force_terminate)** | Grandchildren orphaned on Windows *[Observed]* | **taskkill /PID /T /F** synchronous tree exit | **Zero orphan processes** (PID and tree killed) | Clean tree death | `test-remote-latency-suite.js` (Test H) |
 | **PowerShell Unicode output (Cyrillic)** | `??????` or CP1251 mangling *[Observed]* | **UTF-8: "Привіт тест"** | **100% clean Cyrillic** | Native UTF-8 | `test-remote-latency-suite.js` |
 
@@ -75,7 +75,8 @@ It does **not** expose `cwd`, `working_directory`, or `exec_batch`.
    - The daemon strictly verifies the local pinned build `C:\Users\pavlo\desktop-commander-fast\dist\index.js`. If missing, it immediately exits with an error rather than falling back to an ephemeral, stale `_npx\...` cache.
 
 6. **Patched Build Identity & Telemetry**:
-   - Exposes `fork_revision: "fast-1.0.0"`, `fast_profile_version: "fast-1.0.0"`, and `build_commit: "009e66c"` in channel tracking and capability metadata.
+   - Dynamic git commit resolution (`getBuildCommit()`) automatically detects and reports the live git commit hash (or `BUILD_COMMIT` env override).
+   - Exposes `fork_revision: "fast-1.0.0"`, `fast_profile_version: "fast-1.0.0"`, and live `build_commit` in channel tracking and capability metadata.
    - Preserves `app_version: "0.2.51"` for marketplace backwards compatibility.
 
 ---

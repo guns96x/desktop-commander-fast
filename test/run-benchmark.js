@@ -8,7 +8,6 @@ import assert from 'assert';
 import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
-import { execSync } from 'child_process';
 import {
   startProcess,
   readProcessOutput,
@@ -101,7 +100,26 @@ async function runBenchmark() {
     console.log('  Stats:', benchmarkData.benchmarks['empty_poll_wait']);
   }
 
-  // 4. REPL Silent Interact Cap
+  // 4. Buffered Output Read Retrieval (O(1) line buffer slicing)
+  console.log('\n▶ Benchmarking: Buffered Output Read (10 samples)...');
+  {
+    const job = await startProcess({ command: 'for ($i = 1; $i -le 100; $i++) { Write-Output "Buffered line $i" }' });
+    const pid = job.structuredContent.pid;
+    // Wait for process to generate and buffer output
+    await delay(500);
+    const samples = [];
+    for (let i = 0; i < 10; i++) {
+      const t0 = performance.now();
+      await readProcessOutput({ pid, offset: 0, length: 10 });
+      samples.push(performance.now() - t0);
+      await delay(20);
+    }
+    try { await forceTerminate({ pid }); } catch {}
+    benchmarkData.benchmarks['buffered_read_output'] = computeStats(samples);
+    console.log('  Stats:', benchmarkData.benchmarks['buffered_read_output']);
+  }
+
+  // 5. REPL Silent Interact Cap
   console.log('\n▶ Benchmarking: REPL Silent Interact Wait Cap (3 samples)...');
   {
     const samples = [];
@@ -122,16 +140,44 @@ async function runBenchmark() {
     console.log('  Stats:', benchmarkData.benchmarks['silent_repl_interact']);
   }
 
-  // 5. Real Libuv Starvation Lightweight Latency
-  console.log('\n▶ Benchmarking: Real Libuv Starvation Lightweight Latency (20 samples)...');
+  // 6. Standalone list_processes
+  console.log('\n▶ Benchmarking: Standalone list_processes (10 samples)...');
+  {
+    const samples = [];
+    for (let i = 0; i < 10; i++) {
+      const t0 = performance.now();
+      await listProcesses();
+      samples.push(performance.now() - t0);
+      await delay(50);
+    }
+    benchmarkData.benchmarks['standalone_list_processes'] = computeStats(samples);
+    console.log('  Stats:', benchmarkData.benchmarks['standalone_list_processes']);
+  }
+
+  // 7. Standalone list_sessions
+  console.log('\n▶ Benchmarking: Standalone list_sessions (10 samples)...');
+  {
+    const samples = [];
+    for (let i = 0; i < 10; i++) {
+      const t0 = performance.now();
+      await listSessions();
+      samples.push(performance.now() - t0);
+      await delay(20);
+    }
+    benchmarkData.benchmarks['standalone_list_sessions'] = computeStats(samples);
+    console.log('  Stats:', benchmarkData.benchmarks['standalone_list_sessions']);
+  }
+
+  // 8. Real Libuv Starvation Lightweight Latency (16 parallel 2MB workers)
+  console.log('\n▶ Benchmarking: Real Libuv Starvation Lightweight Latency (16x2MB workers, 20 samples)...');
   {
     const tempDir = path.join(process.cwd(), 'test', 'bench_fs_tmp');
     await fs.mkdir(tempDir, { recursive: true });
 
     let stopHeavyLoad = false;
-    const heavyWorkers = Array.from({ length: 8 }).map(async (_, workerId) => {
+    const heavyWorkers = Array.from({ length: 16 }).map(async (_, workerId) => {
       const filePath = path.join(tempDir, `bench_stress_${workerId}.bin`);
-      const buffer = crypto.randomBytes(1024 * 1024);
+      const buffer = crypto.randomBytes(1024 * 1024 * 2); // 2MB buffer
       while (!stopHeavyLoad) {
         await fs.writeFile(filePath, buffer);
         const data = await fs.readFile(filePath);
